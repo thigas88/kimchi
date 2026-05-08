@@ -195,6 +195,67 @@ describe("ContinuationNudge.isDoneSignalReceived", () => {
 	})
 })
 
+describe("ContinuationNudge subagent-pending suppression", () => {
+	it("suppresses the nudge when a subagent call is pending", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.markSubagentCall()
+		// Even though this is a text-only turn, the nudge must not fire
+		// because a subagent result is still pending.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("allows the nudge after clearSubagentPending is called", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.markSubagentCall()
+		guard.clearSubagentPending()
+		// Now the nudge can fire normally.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+	})
+
+	it("resetForNewUserInput does NOT clear pendingSubagentCount", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.markSubagentCall()
+		// Simulate an unrelated user input arriving while subagent is running.
+		guard.resetForNewUserInput()
+		// The nudge must still be suppressed — we are still waiting for the result.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("a regular tool call does NOT clear pendingSubagentCount", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.markSubagentCall()
+		// Model makes a regular (non-subagent) tool call — subagent is still pending.
+		guard.recordToolCall()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+	})
+
+	it("multiple markSubagentCall requires matching clearSubagentPending calls", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.markSubagentCall()
+		guard.markSubagentCall() // two concurrent subagents
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		// First result arrives — still one pending.
+		guard.clearSubagentPending()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
+		// Second result arrives — all done, nudge can fire.
+		guard.clearSubagentPending()
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+	})
+
+	it("clearSubagentPending without markSubagentCall has no effect", () => {
+		const guard = new ContinuationNudge()
+		guard.resetForNewUserInput()
+		guard.clearSubagentPending()
+		// Normal behavior: nudge fires on text-only turn.
+		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
+	})
+})
+
 function makeUser(text: string): UserMessage {
 	return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() }
 }

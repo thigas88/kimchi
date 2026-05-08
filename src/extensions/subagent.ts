@@ -356,6 +356,8 @@ function spawnSubagent(
 		}
 
 		const finish = (exitCode: number) => {
+			if (closed) return
+			closed = true
 			clearTimeout(timeoutHandle)
 			clearTimeout(inactivityHandle)
 			combinedSignal.removeEventListener("abort", onAbort)
@@ -428,13 +430,11 @@ function spawnSubagent(
 		})
 
 		proc.on("close", (code) => {
-			closed = true
 			if (buffer.trim()) processLine(buffer)
 			finish(code ?? 0)
 		})
 
 		proc.on("error", (err) => {
-			closed = true
 			if (failureReason === undefined) failureReason = "exit_error"
 			stderr = stderr || err.message
 			finish(1)
