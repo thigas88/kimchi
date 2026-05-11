@@ -20,6 +20,7 @@ import { FermentError, clearFermentCache } from "../../ferment/store.js"
 import type { Ferment, FermentWorkMode, Step } from "../../ferment/types.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { parseFermentCommand } from "./command-parser.js"
+import { extractContextualOptions, extractTrailingQuestion } from "./contextual-options.js"
 import { formatDecisionsAndMemories, formatFermentStatus, formatScopingContext, stripToolRefs } from "./format.js"
 import { isPlanMode } from "./modes.js"
 import { appendRefEntry, maybeInjectAutoNudge } from "./nudge.js"
@@ -100,37 +101,20 @@ export function getCurrentRecipe(): Step[] {
 	return f?.phases.find((p) => p.id === f.activePhaseId)?.steps ?? []
 }
 
-/**
- * Extract just the final question from an assistant message — the last
- * sentence ending in `?`, with light cleanup. Falls back to the last 200
- * chars only if no `?` is found in the trailing region. The full message is
- * already rendered in the transcript above the dialog; the dialog title
- * should show only the actual question being asked.
- */
-function extractTrailingQuestion(text: string): string {
-	const trimmed = text.trim()
-	if (!trimmed) return "Continue?"
+type AssistantContentPart = { type: string; text?: string; name?: string }
 
-	// Look for the last `?` and walk back to the nearest sentence start
-	// (start-of-text, blank line, or sentence-ending punctuation followed by space).
-	const lastQ = trimmed.lastIndexOf("?")
-	if (lastQ === -1) return trimmed.slice(-200)
+function hasToolCall(content: AssistantContentPart[], toolName: string): boolean {
+	return content.some((c) => c.type === "toolCall" && c.name === toolName)
+}
 
-	// Search backwards from lastQ for a sentence boundary.
-	const tail = trimmed.slice(0, lastQ + 1)
-	const boundary = tail.search(/(?:^|[\n.!?]\s+|"\s+)([^.!?\n"]*\?)$/)
-	if (boundary >= 0) {
-		// Pull out the captured group (the question itself, without the boundary char).
-		const m = tail.match(/(?:^|[\n.!?]\s+|"\s+)([^.!?\n"]*\?)$/)
-		if (m?.[1]) return m[1].trim()
-	}
-
-	// Fallback: take the last line that contains the question mark.
-	const lines = tail.split("\n")
-	for (let i = lines.length - 1; i >= 0; i--) {
-		if (lines[i].includes("?")) return lines[i].trim()
-	}
-	return trimmed.slice(-200)
+function extractPromptTextAfterLastToolCall(content: AssistantContentPart[]): string {
+	const lastToolCall = content.findLastIndex((c) => c.type === "toolCall")
+	return content
+		.slice(lastToolCall + 1)
+		.filter((c) => c.type === "text")
+		.map((c) => c.text ?? "")
+		.join("")
+		.trimEnd()
 }
 
 // ─── Planner system prompt supplement ─────────────────────────────────────────
@@ -343,18 +327,12 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		if (!ctx?.ui?.select || !ctx?.ui?.input) return
 		if (event.message.role !== "assistant") return
 
-		// Extract text from the assistant message content
-		const text = event.message.content
-			.filter((c: { type: string }) => c.type === "text")
-			.map((c: { type: string; text?: string }) => ("text" in c ? (c.text ?? "") : ""))
-			.join("")
-			.trimEnd()
-
-		if (!text.endsWith("?")) return
-
-		// Don't intercept if the turn also had tool calls (mid-execution text)
-		const hasToolCalls = event.message.content.some((c: { type: string }) => c.type === "toolCall")
-		if (hasToolCalls) return
+		// Only inspect text after the final tool call. Text before or between tool
+		// calls can be mid-execution narration; trailing text is the user-facing
+		// prompt that needs the dropdown.
+		if (hasToolCall(event.message.content, "propose_phases")) return
+		const text = extractPromptTextAfterLastToolCall(event.message.content)
+		if (!text) return
 
 		const isDraft = f.status === "draft"
 		const yesLabel = isDraft ? "Yes, this looks right" : "Yes, proceed"
@@ -364,7 +342,12 @@ export default function fermentExtension(pi: ExtensionAPI) {
 		// of the message. The full text is already rendered above the dialog —
 		// the dialog title should be the question itself, nothing more.
 		const title = extractTrailingQuestion(text)
-		const choice = await ctx.ui.select(title, [yesLabel, noLabel, "Let me say something else"])
+		const contextualOptions = extractContextualOptions(text)
+		if (!text.endsWith("?") && !contextualOptions) return
+		const options = contextualOptions
+			? [...contextualOptions, "Let me say something else"]
+			: [yesLabel, noLabel, "Let me say something else"]
+		const choice = await ctx.ui.select(title, options)
 		if (!choice) return
 
 		let reply: string
@@ -375,7 +358,10 @@ export default function fermentExtension(pi: ExtensionAPI) {
 			reply = custom
 		} else if (choice === noLabel) {
 			reply = isDraft ? "No — please revise." : "No, pause for now."
-		} else if (isDraft) {
+		} else if (contextualOptions?.includes(choice)) {
+			// User selected a contextual option — pass it through verbatim
+			reply = choice
+		} else if (isDraft && choice === yesLabel) {
 			// User confirmed during scoping. If the LLM stashed a structured
 			// proposal via propose_phases, apply it deterministically here —
 			// no further LLM round-trip needed. The user confirmed what they
