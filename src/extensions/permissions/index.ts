@@ -34,7 +34,29 @@ const EMPTY_LOADED_CONFIG: LoadedConfig = {
 const PLAN_MODE_TOOLS = ["read", "grep", "find", "ls", "web_search", "web_fetch", "questionnaire", "bash"]
 
 // subagent delegates to a sub-session that enforces permissions on its own calls.
-const BUILTIN_ALLOW_TOOL_NAMES = ["subagent", "set_phase"]
+// ferment tools are internal state-management operations, never write user files or run shell commands.
+const BUILTIN_ALLOW_TOOL_NAMES = [
+	"subagent",
+	"set_phase",
+	"create_ferment",
+	"list_ferments",
+	"scope_ferment",
+	"update_scope_field",
+	"activate_phase",
+	"refine_phase",
+	"start_step",
+	"complete_step",
+	"verify_step",
+	"skip_step",
+	"complete_phase",
+	"skip_phase",
+	"complete_ferment",
+	"fail_step",
+	"fail_phase",
+	"add_decision",
+	"add_memory",
+	"set_ferment_mode",
+]
 
 const MODES: Array<{ mode: PermissionMode; label: string; color: "success" | "warning" | "error" }> = [
 	{ mode: "default", label: "default", color: "success" },
@@ -47,6 +69,13 @@ let _currentPermissionsMode: PermissionMode = "default"
 
 export function getCurrentPermissionsMode(): PermissionMode {
 	return _currentPermissionsMode
+}
+
+/** Called by the ferment extension whenever a ferment becomes active or is cleared. */
+let _onFermentActiveChange: ((hasActiveFerment: boolean) => void) | undefined
+
+export function notifyFermentActive(hasActiveFerment: boolean): void {
+	_onFermentActiveChange?.(hasActiveFerment)
 }
 
 export default function permissionsExtension(pi: ExtensionAPI): void {
@@ -98,6 +127,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
 	let unsubscribeTerminalInput: (() => void) | null = null
+	let _lastCtx: ExtensionContext | undefined
 
 	function rebuildConfigRules(): void {
 		configRules = [
@@ -192,6 +222,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		maybeShowYoloWarning(ctx, next)
 	}
 
+	// Wire the cross-extension callback: ferment calls notifyFermentActive() when
+	// a ferment is activated or cleared, so permissions can switch to/from yolo.
+	_onFermentActiveChange = (hasActiveFerment: boolean) => {
+		if (cliMode) return // explicit CLI flag always wins
+		if (hasActiveFerment) {
+			runtimeMode = "yolo"
+		} else {
+			// Only clear runtimeMode if we set it for ferment (not if user changed it manually)
+			if (runtimeMode === "yolo") runtimeMode = undefined
+		}
+		propagateModeToEnv()
+		if (_lastCtx) {
+			updateStatus(_lastCtx)
+			maybeShowYoloWarning(_lastCtx, currentMode())
+		}
+	}
+
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
 		const { loaded: lc, errors } = loadConfig({
 			cwd: ctx.cwd,
@@ -217,6 +264,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		_lastCtx = ctx
 		const { errors } = doLoadConfig(ctx)
 
 		for (const err of errors) {
@@ -249,6 +297,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		else if (pi.getFlag("auto")) cliMode = "auto"
 		// YOLO mode: --yolo and --dangerously-skip-permissions both set yolo mode (no classifier, auto-approve all)
 		else if (pi.getFlag("yolo") || pi.getFlag("dangerously-skip-permissions")) cliMode = "yolo"
+
+		// Active ferment → auto-yolo so all ferment tools execute without approval prompts.
+		// Only applies when no explicit CLI mode flag was given.
+		if (!cliMode && process.env.KIMCHI_ACTIVE_FERMENT) {
+			runtimeMode = "yolo"
+		}
 
 		if (currentMode() === "plan") applyPlanModeTools()
 		propagateModeToEnv()
