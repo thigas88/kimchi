@@ -2,7 +2,14 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { isRestoringModel } from "./ferment/state.js"
-import { contextFitsModel, getSafeContextWindow, sessionHasImages } from "./model-guard.js"
+import {
+	contextFitsModel,
+	getLatestMessages,
+	getLatestMessagesTimestamp,
+	getSafeContextWindow,
+	resolveContextTokens,
+	sessionHasImages,
+} from "./model-guard.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { splitModelRef } from "./orchestration/model-roles.js"
@@ -125,12 +132,22 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 			}
 
 			const usage = ctx.getContextUsage()
-			if (usage?.tokens != null && !contextFitsModel(usage.tokens, target.contextWindow)) {
+			// getLatestMessages() returns the most recent context from model-guard's
+			// "context" handler. It is updated on every LLM call, so data is fresh
+			// as long as the session has processed at least one context event.
+			const messages = getLatestMessages()
+			if (messages.length > 0 && getLatestMessagesTimestamp() === 0) {
+				// Defensive: messages array is non-empty but timestamp is unset
+				// (should never happen). Treat as stale and skip local estimate.
+				console.warn("[model-switch] getLatestMessages() has messages but no timestamp — treating as stale")
+			}
+			const tokens = resolveContextTokens(usage, messages)
+			if (tokens != null && !contextFitsModel(tokens, target.contextWindow)) {
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Current context (${usage.tokens} tokens) exceeds the target model "${model}" safe context limit (${getSafeContextWindow(target.contextWindow)} of ${target.contextWindow} tokens). Switch rejected to prevent data loss. Use /compact to reduce context size, then retry.`,
+							text: `Current context (${tokens} tokens) exceeds the target model "${model}" safe context limit (${getSafeContextWindow(target.contextWindow)} of ${target.contextWindow} tokens). Switch rejected to prevent data loss. Use /compact to reduce context size, then retry.`,
 						},
 					],
 					details: null,
@@ -204,13 +221,16 @@ export default function modelSwitchExtension(pi: ExtensionAPI) {
 
 		const usage = ctx.getContextUsage?.()
 
-		// Context window guard — block if current tokens exceed target safe context window
-		if (usage?.tokens != null && !contextFitsModel(usage.tokens, event.model.contextWindow)) {
+		// Context window guard — block if current tokens exceed target safe context window.
+		// Falls back to local estimate when upstream tokens are null (post-compaction).
+		const messages = getLatestMessages()
+		const tokens = resolveContextTokens(usage, messages)
+		if (tokens != null && !contextFitsModel(tokens, event.model.contextWindow)) {
 			isRevertingModel = true
 			await pi.setModel(event.previousModel)
 			isRevertingModel = false
 			ctx.ui?.notify(
-				`Current context (${usage.tokens} tokens) exceeds the ${event.model.id} safe context limit (${getSafeContextWindow(event.model.contextWindow)} of ${event.model.contextWindow} tokens). Switch rejected — use /compact to reduce context size, then try again.`,
+				`Current context (${tokens} tokens) exceeds the ${event.model.id} safe context limit (${getSafeContextWindow(event.model.contextWindow)} of ${event.model.contextWindow} tokens). Switch rejected — use /compact to reduce context size, then try again.`,
 				"error",
 			)
 			return
