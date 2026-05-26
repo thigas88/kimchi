@@ -140,7 +140,6 @@ describe("FermentRuntime pending plan review cleanup", () => {
 		h.runtime.setPendingScope(h.fermentId, { goal: "Goal", successCriteria: "Done", constraints: [] })
 		h.runtime.setPendingPlanReview({
 			fermentId: h.fermentId,
-			fermentName: "Lifecycle Test",
 			planMarkdown: "# Plan",
 		})
 
@@ -159,6 +158,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				success_criteria: "Tests pass",
 				constraints: ["Keep it small"],
@@ -183,6 +183,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
@@ -192,6 +193,25 @@ describe("scopeFerment", () => {
 
 		expect(okText(result)).toContain("scoped and ready")
 		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
+	})
+
+	it("rejects scope_ferment when title is blank", async () => {
+		const h = createHarness()
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "   ",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ pi: h.pi },
+		)
+
+		expect(errText(result)).toContain('Field "title" must be a non-empty')
+		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
 	})
 
 	it("refuses scoping when agent self-flags a plan gate", async () => {
@@ -211,6 +231,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: flaggedGates,
@@ -231,6 +252,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: incomplete,
@@ -252,6 +274,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement" }],
 				gates: passingPlanGates(),
@@ -272,6 +295,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				success_criteria: "Tests pass",
 				assumptions: "k8s cluster exists and is reachable",
@@ -292,6 +316,7 @@ describe("scopeFerment", () => {
 			h.runtime,
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				gates: passingPlanGates(),
@@ -334,6 +359,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			"tool-call-1",
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				questions: [
@@ -357,6 +383,27 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 		expect(errText(result)).not.toContain("questions.0.question")
 	})
 
+	it("rejects propose_ferment_scoping when title is blank", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: '  ""  ',
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			{ ui: {} },
+		)
+
+		expect(errText(result)).toContain('Field "title" must be a non-empty')
+	})
+
 	it("rejects prompt because question is the only public question text field", async () => {
 		const { h, execute } = createProposeHarness()
 
@@ -364,6 +411,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			"tool-call-1",
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				questions: [
@@ -393,6 +441,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			"tool-call-1",
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				questions: [
@@ -423,6 +472,7 @@ describe("propose_ferment_scoping via registerLifecycleTools", () => {
 			"tool-call-1",
 			{
 				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
 				goal: "Ship the feature",
 				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
 				questions: [

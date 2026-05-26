@@ -1,8 +1,8 @@
 import { writeFileSync } from "node:fs"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { shortenTitle } from "../../ferment/shorten-title.js"
 import { computeStats, serializeStats } from "../../ferment/stats.js"
 import { FermentError } from "../../ferment/store.js"
+import { deriveDraftFermentTitle } from "../../ferment/title.js"
 import { requestSharedFooterRender } from "../shared-footer.js"
 import { pr_bold, pr_dim, pr_orange, pr_success, pr_teal } from "./colors.js"
 import { type FermentCommand, parseFermentCommand } from "./command-parser.js"
@@ -187,10 +187,10 @@ export async function startInteractiveFerment({
 	if (!rawIntent) return
 
 	const storage = runtime.getStorage()
-	ctx.ui.setStatus?.("ferment-scoping", "Fermenting · naming…")
+	ctx.ui.setStatus?.("ferment-scoping", "Fermenting · creating…")
 	sendFermentRequestMessage(pi, rawIntent)
 	try {
-		const shortName = await shortenTitle(rawIntent)
+		const shortName = deriveDraftFermentTitle(rawIntent)
 		const f = storage.create(shortName, rawIntent)
 		setActiveFermentAndApplyProfile(pi, runtime, f)
 		appendRefEntry(pi, f.id)
@@ -820,7 +820,7 @@ export class FermentCommandController {
 				if (!typed) return { handled: true }
 				resolvedIntent = typed
 			}
-			ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
+			ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
 			try {
 				// One-shot is non-interactive by definition — only auto-init when the
 				// user opted in via flag or env var. Otherwise skip silently.
@@ -829,7 +829,7 @@ export class FermentCommandController {
 					autoInit: pi.getFlag?.("init-git") === true || autoInitFromEnv(),
 				})
 				runtime.setContinuationPolicy("automated")
-				const shortName = await shortenTitle(resolvedIntent)
+				const shortName = deriveDraftFermentTitle(resolvedIntent)
 				const f = storage.create(shortName, resolvedIntent)
 				const updated = f
 				setActiveFermentAndApplyProfile(pi, runtime, updated)
@@ -885,12 +885,12 @@ export class FermentCommandController {
 			scopingIntent = typed
 			sendFermentRequestMessage(pi, typed)
 		}
-		ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · naming…")
+		ctx.ui.setStatus?.("ferment-scoping", "🫧  Fermenting · creating…")
 		try {
 			// Interactive path: ui.confirm is available, so ensureGitRepo will ask.
 			// User can decline; ferment still proceeds with no branch/commit info.
 			await ensureGitRepo({ ui: ctx.ui })
-			const shortName = await shortenTitle(rawName)
+			const shortName = deriveDraftFermentTitle(rawName)
 			const f = storage.create(shortName, rawName)
 			setActiveFermentAndApplyProfile(pi, runtime, f)
 			appendRefEntry(pi, f.id)

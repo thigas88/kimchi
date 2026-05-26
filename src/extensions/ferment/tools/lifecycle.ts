@@ -11,6 +11,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import type { Command, ScopePhaseInput } from "../../../ferment/state-machine.js"
+import { normalizeFermentTitle } from "../../../ferment/title.js"
 import {
 	DEFAULT_SCOPING_QUESTION_TYPE,
 	type Grade,
@@ -68,6 +69,8 @@ type ScopingAnswer = {
 }
 
 const SCOPING_STATUS_KEY = "ferment-scoping"
+const TITLE_REQUIRED_ERROR =
+	'Field "title" must be a non-empty concise 3-5 word title. Retry with the full payload including title.'
 
 export interface LifecycleExecutionContext {
 	pi: ExtensionAPI
@@ -312,6 +315,8 @@ function normalizeScopingQuestionType(
 }
 
 function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizeProposeScopingResult {
+	const title = normalizeFermentTitle(params.title)
+	if (!title) return { ok: false, error: toolErr(TITLE_REQUIRED_ERROR) }
 	const constraints = normalizeStringArray(params.constraints, "constraints")
 	if (typeof constraints === "string") return { ok: false, error: toolErr(constraints) }
 	const phases = normalizePhases(params.phases)
@@ -320,7 +325,14 @@ function normalizeProposeScopingParams(params: ProposeScopingArgs): NormalizePro
 	if (typeof questions === "string") return { ok: false, error: toolErr(questions) }
 	return {
 		ok: true,
-		params: { ...params, constraints, assumptions: normalizeAssumptions(params.assumptions), phases, questions },
+		params: {
+			...params,
+			title,
+			constraints,
+			assumptions: normalizeAssumptions(params.assumptions),
+			phases,
+			questions,
+		},
 	}
 }
 
@@ -350,7 +362,7 @@ function validateScopingQuestions(questions: ScopingQuestion[]): string | null {
 	return null
 }
 
-export function buildPlanMarkdown(fermentName: string, params: NormalizedProposeScopingArgs): string {
+export function buildPlanMarkdown(params: NormalizedProposeScopingArgs): string {
 	const phaseBlocks = params.phases.map((p, i) => {
 		const goalLines = wrapText(p.goal, 86)
 		const stepLines = (p.steps ?? []).map((s, j) => renderStep(j + 1, s.description)).join("\n")
@@ -363,7 +375,7 @@ export function buildPlanMarkdown(fermentName: string, params: NormalizedPropose
 			.join("\n")
 	})
 	return [
-		`# Plan: ${fermentName}`,
+		`# Plan: ${params.title}`,
 		"",
 		renderWrapped("## Goal", params.goal),
 		"",
@@ -417,6 +429,8 @@ export async function scopeFerment(
 	{ pi }: LifecycleExecutionContext,
 ): Promise<ToolResult> {
 	const applyAndPersist = createApplyAndPersist(runtime)
+	const title = normalizeFermentTitle(params.title)
+	if (!title) return toolErr(TITLE_REQUIRED_ERROR)
 
 	// Plan-scope gate validation runs BEFORE any state mutation. The agent
 	// must declare verifiable success signals (P1), composition (P2), and
@@ -443,7 +457,7 @@ export async function scopeFerment(
 			[
 				`Cannot call scope_ferment for interactive ferment "${params.ferment_id}" before host confirmation.`,
 				pendingHint,
-				"Retry by calling propose_ferment_scoping with the full valid payload: goal, success_criteria, constraints, assumptions, phases, questions, and gates.",
+				"Retry by calling propose_ferment_scoping with the full valid payload: title, goal, success_criteria, constraints, assumptions, phases, questions, and gates.",
 				"If a previous propose_ferment_scoping call failed validation, fix that schema error and re-emit the same plan.",
 				"Do not summarize the plan in chat. Do not call scope_ferment directly.",
 			].join("\n"),
@@ -457,7 +471,7 @@ export async function scopeFerment(
 
 	const cmd: Command = {
 		type: "scope",
-		title: params.title,
+		title,
 		goal: params.goal,
 		successCriteria: params.success_criteria,
 		constraints: params.constraints,
@@ -660,7 +674,7 @@ export function registerLifecycleTools(pi: ExtensionAPI, runtime: FermentRuntime
 	pi.registerTool({
 		name: "propose_ferment_scoping",
 		label: "Propose Scoping",
-		description: `Emit the full scoping draft: goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
+		description: `Emit the full scoping draft: title, goal, criteria, constraints, assumptions, 1-7 phases, questions, and gates. title is required and must be a concise 3-5 word Ferment name. If the agent has decision-blocking scoping questions, they must be included in the questions array in this tool call; each question should use the canonical field name question for the user-visible question sentence; do not ask scoping questions in chat after calling this tool. Use questions: [] when no decision-blocking question remains. Questions pause planning; after answers, re-emit the updated proposal with questions: []. If questions is non-empty, keep phases provisional and answer-agnostic. Every call must include the full gates array: exactly P1, P2, and P3, each with id, verdict, rationale, and evidence. Partial gates are rejected. Prefer one phase for simple tasks and assumptions over default-choice questions.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ProposeScopingParams,
@@ -724,7 +738,7 @@ ${renderGateGuidance("scope_ferment")}`,
 			})
 
 			// 4. Build clean markdown for final/headless tool output and local review UI.
-			const planEntry = buildPlanMarkdown(ferment.name, params)
+			const planEntry = buildPlanMarkdown(params)
 			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
 			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>
 				toolOk(options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message)
@@ -738,7 +752,6 @@ ${renderGateGuidance("scope_ferment")}`,
 						params.ferment_id,
 						params.phases,
 						"propose_ferment_scoping",
-						params.title,
 						pi,
 					)
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
@@ -767,7 +780,6 @@ ${renderGateGuidance("scope_ferment")}`,
 						params.ferment_id,
 						params.phases,
 						"propose_ferment_scoping",
-						params.title,
 						pi,
 					)
 					if (!scopeOutcome.ok) return failedToolResult(scopeOutcome.error, ferment)
@@ -782,8 +794,6 @@ ${renderGateGuidance("scope_ferment")}`,
 
 				runtime.setPendingPlanReview({
 					fermentId: params.ferment_id,
-					fermentName: ferment.name,
-					title: params.title,
 					planMarkdown: planEntry,
 				})
 				return planToolOk("Plan ready for review. The review dialog will open when this turn finishes.")
@@ -962,7 +972,7 @@ ${renderGateGuidance("scope_ferment")}`,
 	pi.registerTool({
 		name: "scope_ferment",
 		label: "Scope Ferment",
-		description: `Save scoping answers and transition ferment from draft to planned. In interactive scoping, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses scoping.
+		description: `Save scoping answers and transition ferment from draft to planned. title is required and must be a concise 3-5 word Ferment name. In interactive scoping, the harness gates this call until the user has confirmed the proposed plan via TUI dropdown. You must produce verdicts for the three plan-scope gates below. A "flag" verdict refuses scoping.
 
 ${renderGateGuidance("scope_ferment")}`,
 		parameters: ScopeParams,
